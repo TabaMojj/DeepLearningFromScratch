@@ -1,5 +1,13 @@
+from copy import deepcopy
+
 import numpy as np
 from numpy import ndarray
+
+
+def permute_data(X: ndarray, y: ndarray):
+    """Permute X and y, using same permutation, along axis=0"""
+    perm = np.random.permutation(X.shape[0])
+    return X[perm], y[perm]
 
 
 def assert_same_shape(array: ndarray,
@@ -317,4 +325,167 @@ class MeanSquaredError(Loss):
         """
         return 2.0 * (self.prediction - self.target) / self.prediction.shape[0]
 
+
+class NeuralNetwork:
+    """
+    The class for a neural network.
+    """
+
+    def __init__(self, layers: list[Layer],
+                 loss: Loss,
+                 seed: float = 1):
+        self.layers = layers
+        self.loss = loss
+        self.seed = seed
+        if seed:
+            for layer in self.layers:
+                setattr(layer, "seed", self.seed)
+
+    def forward(self, x_batch: ndarray) -> ndarray:
+        """
+        Passes data forward through a series of layers.
+        """
+        x_out = x_batch
+        for layer in self.layers:
+            x_out = layer.forward(x_out)
+        return x_out
+
+    def backward(self, loss_grad: ndarray):
+        """
+        Passes data backward through a series of layers.
+        """
+        grad = loss_grad
+        for layer in reversed(self.layers):
+            grad = layer.backward(grad)
+
+    def train_batch(self, X_batch: ndarray, y_batch: ndarray) -> float:
+        """
+        Passes data forward through the layers.
+        Computes the loss.
+        Passes daya backward through the layers.
+        """
+        predictions = self.forward(X_batch)
+        loss = self.loss.forward(predictions, y_batch)
+        self.backward(self.loss.backward())
+        return loss
+
+    def params(self):
+        """
+        Gets the parameters for the network.
+        """
+        for layer in self.layers:
+            yield from layer.param_grads
+
+    def param_grads(self):
+        """
+        Gets the gradient of the loss with respect to the parameters for the network.
+        """
+        for layer in self.layers:
+            yield from layer.param_grads
+
+
+class Optimizer:
+    """
+    Base class for a neural network optimizer.
+    """
+
+    def __init__(self, lr: float = 0.01):
+        """
+        Every optimizer must have an initial learning rate.
+        """
+        self.lr = lr
+
+    def step(self):
+        """
+        Every optimizer must implement the step function
+        """
+        raise NotImplementedError()
+
+
+class SGD(Optimizer):
+    """
+    Stochastic gradient descent optimizer.
+    """
+
+    def __init__(self, lr: float = 0.01):
+        super().__init__(lr)
+
+    def step(self):
+        """
+        For each parameter, adjust in the appropriate direction,
+        with the magnitude of the adjustment based on the learning rate.
+        """
+        # .net is a dynamic attribute set in Trainer class.
+        for (param, param_grad) in zip(self.net.params(), self.net.param_grads()):
+            param -= self.lr * param_grad
+
+
+class Trainer:
+    """
+    Trains a neural network.
+    """
+
+    def __init__(self, net: NeuralNetwork, optim: Optimizer):
+        """
+        Requires a neural network and an optimizer in order for training to occur.
+        Assign the neural network as an instance variable to the optimizer.
+        """
+        self.net = net
+        self.optim = optim
+        self.best_loss = 1e9
+        setattr(self.optim, 'net', self.net)
+
+    def generate_batches(self,
+                         X: ndarray,
+                         y: ndarray,
+                         size: int = 32) -> tuple[ndarray]:
+        assert X.shape[0] == y.shape[0], '''features and target must have the same number of rows,
+         instead features has {0} and target has {1}
+        '''.format(X.shape[0], y.shape[0])
+        N = X.shape[0]
+        for i in range(0, N, size):
+            X_batch, y_batch = X[i:i + size], y[i:i + size]
+            yield X_batch, y_batch
+
+    def fit(self,
+            X_train: ndarray,
+            y_train: ndarray,
+            X_test: ndarray,
+            y_test: ndarray,
+            epochs: int = 100,
+            eval_every: int = 10,
+            batch_size: int = 32,
+            seed: int = 1,
+            restart: bool = True):
+        """
+        Fits the neural network on the training data for a certain number of epochs.
+        Every 'eval_every' epochs, it evaluates the neural network on the testing data.
+        """
+        np.random.seed(seed)
+        if restart:
+            self.best_loss = 1e9
+            for layer in self.net.layers:
+                layer.first = True
+
+        for e in range(epochs):
+            if (e+1) % eval_every == 0:
+                # for early stopping
+                last_model = deepcopy(self.net)
+            X_train, y_train = permute_data(X_train, y_train)
+            batch_generator = self.generate_batches(X_train, y_train, batch_size)
+            for i, (X_batch, y_batch) in enumerate(batch_generator):
+                self.net.train_batch(X_batch, y_batch)
+                self.optim.step()
+            if (e+1)% eval_every == 0:
+                test_preds = self.net.forward(X_test)
+                loss = self.net.loss.forward(test_preds, y_test)
+                if loss < self.best_loss:
+                    print(f"Validation loss after {e+1} epochs is {loss:.3f}")
+                    self.best_loss = loss
+                else:
+                    print(f"""Loss increased after epoch {e+1}, final loss was {self.best_loss:.3f}, using the model from epoch {e+1-eval_every}""")
+                    self.net = last_model
+                    # ensure self.optim is still updating self.net
+                    setattr(self.optim, 'net', self.net)
+                    break
 
