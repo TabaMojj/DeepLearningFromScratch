@@ -385,39 +385,90 @@ class NeuralNetwork:
 
 
 class Optimizer:
-    """
-    Base class for a neural network optimizer.
-    """
-
-    def __init__(self, lr: float = 0.01):
-        """
-        Every optimizer must have an initial learning rate.
-        """
+    def __init__(self,
+                 lr: float = 0.01,
+                 final_lr: float = 0,
+                 decay_type: str = None) -> None:
         self.lr = lr
+        self.final_lr = final_lr
+        self.decay_type = decay_type
+        self.first = True
 
-    def step(self):
-        """
-        Every optimizer must implement the step function
-        """
+    def _setup_decay(self) -> None:
+
+        if not self.decay_type:
+            return
+        elif self.decay_type == 'exponential':
+            self.decay_per_epoch = np.power(self.final_lr / self.lr,
+                                            1.0 / (self.max_epochs - 1))
+        elif self.decay_type == 'linear':
+            self.decay_per_epoch = (self.lr - self.final_lr) / (self.max_epochs - 1)
+
+    def _decay_lr(self) -> None:
+
+        if not self.decay_type:
+            return
+
+        if self.decay_type == 'exponential':
+            self.lr *= self.decay_per_epoch
+
+        elif self.decay_type == 'linear':
+            self.lr -= self.decay_per_epoch
+
+    def step(self,
+             epoch: int = 0) -> None:
+
+        for (param, param_grad) in zip(self.net.params(),
+                                       self.net.param_grads()):
+            self._update_rule(param=param, grad=param_grad)
+
+    def _update_rule(self, **kwargs) -> None:
         raise NotImplementedError()
 
 
 class SGD(Optimizer):
-    """
-    Stochastic gradient descent optimizer.
-    """
+    def __init__(self,
+                 lr: float = 0.01,
+                 final_lr: float = 0,
+                 decay_type: str = None) -> None:
+        super().__init__(lr, final_lr, decay_type)
 
-    def __init__(self, lr: float = 0.01):
-        super().__init__(lr)
+    def _update_rule(self, **kwargs) -> None:
+        update = self.lr * kwargs['grad']
+        kwargs['param'] -= update
 
-    def step(self):
-        """
-        For each parameter, adjust in the appropriate direction,
-        with the magnitude of the adjustment based on the learning rate.
-        """
-        # .net is a dynamic attribute set in Trainer class.
-        for (param, param_grad) in zip(self.net.params(), self.net.param_grads()):
-            param -= self.lr * param_grad
+
+class SGDMomentum(Optimizer):
+    def __init__(self,
+                 lr: float = 0.01,
+                 final_lr: float = 0,
+                 decay_type: str = None,
+                 momentum: float = 0.9) -> None:
+        super().__init__(lr, final_lr, decay_type)
+        self.velocities = None
+        self.momentum = momentum
+
+    def step(self) -> None:
+        if self.first:
+            self.velocities = [np.zeros_like(param)
+                               for param in self.net.params()]
+            self.first = False
+
+        for (param, param_grad, velocity) in zip(self.net.params(),
+                                                 self.net.param_grads(),
+                                                 self.velocities):
+            self._update_rule(param=param,
+                              grad=param_grad,
+                              velocity=velocity)
+
+    def _update_rule(self, **kwargs) -> None:
+
+        # Update velocity
+        kwargs['velocity'] *= self.momentum
+        kwargs['velocity'] += self.lr * kwargs['grad']
+
+        # Use this to update parameters
+        kwargs['param'] -= kwargs['velocity']
 
 
 class Trainer:
@@ -468,7 +519,7 @@ class Trainer:
                 layer.first = True
 
         for e in range(epochs):
-            if (e+1) % eval_every == 0:
+            if (e + 1) % eval_every == 0:
                 # for early stopping
                 last_model = deepcopy(self.net)
             X_train, y_train = permute_data(X_train, y_train)
@@ -476,16 +527,16 @@ class Trainer:
             for i, (X_batch, y_batch) in enumerate(batch_generator):
                 self.net.train_batch(X_batch, y_batch)
                 self.optim.step()
-            if (e+1)% eval_every == 0:
+            if (e + 1) % eval_every == 0:
                 test_preds = self.net.forward(X_test)
                 loss = self.net.loss.forward(test_preds, y_test)
                 if loss < self.best_loss:
-                    print(f"Validation loss after {e+1} epochs is {loss:.3f}")
+                    print(f"Validation loss after {e + 1} epochs is {loss:.3f}")
                     self.best_loss = loss
                 else:
-                    print(f"""Loss increased after epoch {e+1}, final loss was {self.best_loss:.3f}, using the model from epoch {e+1-eval_every}""")
+                    print(
+                        f"""Loss increased after epoch {e + 1}, final loss was {self.best_loss:.3f}, using the model from epoch {e + 1 - eval_every}""")
                     self.net = last_model
                     # ensure self.optim is still updating self.net
                     setattr(self.optim, 'net', self.net)
                     break
-
