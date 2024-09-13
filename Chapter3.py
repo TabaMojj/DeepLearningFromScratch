@@ -31,12 +31,12 @@ class Operation:
         self.output = None
         self.input_ = None
 
-    def forward(self, input_: ndarray):
-        """
-        Stores input in the self._input instance variable
-        """
+    def forward(self,
+                input_: ndarray,
+                inference: bool = False) -> ndarray:
         self.input_ = input_
-        self.output = self._output()
+        self.output = self._output(inference)
+
         return self.output
 
     def backward(self, output_grad: ndarray) -> ndarray:
@@ -48,7 +48,7 @@ class Operation:
         assert_same_shape(self.input_, self.input_grad)
         return self.input_grad
 
-    def _output(self) -> ndarray:
+    def _output(self, inference: bool) -> ndarray:
         """
         The _output method must be defined for each Operation.
         """
@@ -153,6 +153,22 @@ class BiasAdd(ParamOperation):
         return np.sum(param_grad, axis=0).reshape(1, param_grad.shape[1])
 
 
+class Dropout(Operation):
+    def __init__(self, keep_prob: float = 0.8):
+        super().__init__()
+        self.keep_prob = keep_prob
+
+    def _output(self, inference: bool) -> ndarray:
+        if inference:
+            return self.input_ * self.keep_prob
+        else:
+            self.mask = np.random.binomial(1, self.keep_prob, size=self.input_.shape)
+            return self.input_ * self.mask
+
+    def _input_grad(self, output_grad: ndarray) -> ndarray:
+        return output_grad * self.mask
+
+
 class Sigmoid(Operation):
     """
     Sigmoid activation function.
@@ -243,12 +259,20 @@ class Dense(Layer):
     A fully connected layer that inherits from Layer.
     """
 
-    def __init__(self, neurons: int, activation: Operation = Sigmoid()):
+    def __init__(self,
+                 neurons: int,
+                 activation: Operation = Sigmoid(),
+                 conv_in: bool = False,
+                 dropout: float = 1.0,
+                 weight_init: str = "standard"):
         """
         Requires an activation function upon initialization.
         """
         super().__init__(neurons)
         self.activation = activation
+        self.conv_in = conv_in
+        self.dropout = dropout
+        self.weight_init = weight_init
 
     def _setup_layer(self, input_: ndarray):
         """
@@ -266,6 +290,8 @@ class Dense(Layer):
         self.operations = [WeightMultiply(self.params[0]),
                            BiasAdd(self.params[1]),
                            self.activation]
+        if self.dropout < 1.0:
+            self.operations.append(Dropout(self.dropout))
 
 
 class Loss:
